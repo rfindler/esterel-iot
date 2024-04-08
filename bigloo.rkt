@@ -2,7 +2,8 @@
 (require (for-syntax syntax/parse syntax/readerr)
          racket/fixnum)
 
-(provide (rename-out [b:define define]
+(provide (rename-out [b:assert assert]
+                     [b:define define]
                      [b:module module]
                      [b:define-inline define-inline])
          include/bigloo)
@@ -79,3 +80,8 @@
   (syntax-parse stx
     [(_ (name:id) e:expr)
      #'(define (name) e)]))
+
+(define-syntax (b:assert stx)
+  (syntax-parse stx
+    [(_ _ condition)
+     #'(unless condition (error "assert failed"))]))
