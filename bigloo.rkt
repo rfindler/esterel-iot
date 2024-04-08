@@ -10,7 +10,9 @@
 ;; renamings
 (provide (rename-out [fx* *fx]
                      [fx+ +fx]
-                     [bitwise-and bit-and]))
+                     [fx= =fx]
+                     [bitwise-and bit-and]
+                     [arithmetic-shift bit-lsh]))
 
 (define-for-syntax (read-syntax-#!var a b)
   (define rt
