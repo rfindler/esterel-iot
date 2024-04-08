@@ -52,7 +52,6 @@
       #:when (regexp-match? #rx"::" (symbol->string (syntax-e #'arg)))
       #:attr id (datum->syntax #'arg
                                (let ([m (regexp-match #rx"^([^:]*)::" (symbol->string (syntax-e #'arg)))])
-                                 (printf "m: ~s\n" m)
                                  (string->symbol (list-ref m 1)))
                                #'arg
                                #'arg))
