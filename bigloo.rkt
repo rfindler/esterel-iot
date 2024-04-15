@@ -5,15 +5,29 @@
 (provide (rename-out [b:assert assert]
                      [b:define define]
                      [b:module module]
-                     [b:define-inline define-inline])
-         include/bigloo)
+                     [b:define-inline define-inline]
+                     [read-string read-chars])
+         include/bigloo
+         bit-rsh
+         with-trace
+         trace-item
+         tprint
+         unwind-protect)
 
 ;; renamings
 (provide (rename-out [fx* *fx]
                      [fx+ +fx]
                      [fx= =fx]
+                     [fx> >fx]
+                     [fxremainder remainderfx]
                      [bitwise-and bit-and]
-                     [arithmetic-shift bit-lsh]))
+                     [bitwise-ior bit-or]
+                     [arithmetic-shift bit-lsh]
+                     [flush-output flush-output-port]
+                     [display display-string]))
+
+(define (bit-rsh n m)
+  (arithmetic-shift n (- m)))
 
 (define-for-syntax (read-syntax-#!var a b)
   (define rt
@@ -85,3 +99,20 @@
   (syntax-parse stx
     [(_ _ condition)
      #'(unless condition (error "assert failed"))]))
+
+(define-syntax (with-trace stx)
+  (syntax-parse stx
+    [(_ level label . body)
+     #'(let () . body)]))
+
+(define-syntax (trace-item stx)
+  #'(void))
+(define-syntax (tprint stx)
+  #'(void))
+(define-syntax (unwind-protect stx)
+  (syntax-parse stx
+    [(_ expr protect)
+     #'(dynamic-wind
+        void
+        (λ () expr)
+        (λ () protect))]))
