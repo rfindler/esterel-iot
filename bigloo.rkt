@@ -108,7 +108,17 @@
 (define-syntax (trace-item stx)
   #'(void))
 (define-syntax (tprint stx)
-  #'(void))
+  (with-syntax ([file (syntax-source stx)]
+                [line (syntax-line stx)])
+    (syntax-parse stx
+      [(_ a ...)
+       #'(tprint/proc 'file line a ...)])))
+(define (tprint/proc file line . more)
+  (printf "~a:~a:" file line)
+  (for ([e (in-list more)])
+    (display e))
+  #t)
+
 (define-syntax (unwind-protect stx)
   (syntax-parse stx
     [(_ expr protect)
