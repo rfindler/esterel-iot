@@ -87,8 +87,37 @@
      #'(define (fname mandatory.id ...)
          body1 body2 ...)]))
 
+(begin-for-syntax
+  (define-syntax-class field-prop
+    #:datum-literals (read-only default)
+    (pattern read-only)
+    (pattern (default d:expr)))
+  (define-syntax-class field
+    (pattern n:identifier)
+    (pattern (n:identifier fp:field-prop)))
+  (define-syntax-class class
+    #:literals (class)
+    #:attributes (exports)
+    (pattern (class name:id (~optional constructor) f:field ...)
+      #:attr exports #'(name)))
+  (define-syntax-class export-clause
+    #:datum-literals (inline)
+    (pattern x:id
+      #:attr export #'x)
+    (pattern (inline x:id arg:id ...)
+      #:attr export #'x)
+    (pattern (x:id arg:id ...)
+      #:attr export #'x)
+    (pattern cls:class
+      #:attr export #'cls.exports))
+  (define-syntax-class module-clause
+    (pattern (export clause:export-clause ...)
+      #:attr code #'(provide clause.export ...))))
+
 (define-syntax (b:module stx)
-  #'(void))
+  (syntax-parse stx
+    [(_ name:identifier clause:module-clause ...)
+     #'(begin clause.code ...)]))
 
 (define-syntax (b:define-inline stx)
   (syntax-parse stx
