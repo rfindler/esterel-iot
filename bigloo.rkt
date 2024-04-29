@@ -1,12 +1,13 @@
 #lang racket
 (require (for-syntax syntax/parse syntax/readerr)
-         racket/fixnum)
+         racket/fixnum racket/hash)
 
 (provide (rename-out [b:assert assert]
                      [b:define define]
                      [b:module module]
                      [b:define-inline define-inline]
                      [read-string read-chars])
+         multiple-value-bind
          include/bigloo
          bit-rsh
          with-trace
@@ -19,12 +20,16 @@
                      [fx+ +fx]
                      [fx= =fx]
                      [fx> >fx]
+                     [fx>= >=fx]
                      [fxremainder remainderfx]
                      [bitwise-and bit-and]
                      [bitwise-ior bit-or]
                      [arithmetic-shift bit-lsh]
                      [flush-output flush-output-port]
                      [display display-string]))
+
+(struct bigloo-object
+  (ht))
 
 (define (bit-rsh n m)
   (arithmetic-shift n (- m)))
@@ -78,41 +83,117 @@
 
 (define-syntax (b:define stx)
   (syntax-parse stx
-    [(_ (fname:id mandatory:bigloo-annotated-id ... #:key kwd-arg:bigloo-kwd-formal-arg ...)
+    [(_ (fname:bigloo-annotated-id mandatory:bigloo-annotated-id ... #:key kwd-arg:bigloo-kwd-formal-arg ...)
         body1 body2 ...)
-     #'(define (fname mandatory.id ... kwd-arg.racket-arg ... ...)
+     #'(define (fname.id mandatory.id ... kwd-arg.racket-arg ... ...)
          body1 body2 ...)]
-    [(_ (fname:id mandatory:bigloo-annotated-id ...)
+    [(_ (fname:bigloo-annotated-id mandatory:bigloo-annotated-id ...)
         body1 body2 ...)
-     #'(define (fname mandatory.id ...)
+     #'(define (fname.id mandatory.id ...)
          body1 body2 ...)]))
+
 
 (begin-for-syntax
   (define-syntax-class field-prop
     #:datum-literals (read-only default)
-    (pattern read-only)
-    (pattern (default d:expr)))
+    #:attributes (init-expr)
+    (pattern read-only #:attr init-expr #f)
+    (pattern (default d:expr) #:attr init-expr #'d))
+  (define (extract-type id-stx)
+    (let* ([full-name (symbol->string (syntax-e id-stx))]
+           [m (regexp-match #rx"::(.*)$" full-name)])
+      (and m
+           (datum->syntax id-stx (string->symbol (list-ref m 1)) id-stx id-stx))))
+  (define (strip-type id-stx)
+    (let* ([full-name (symbol->string (syntax-e id-stx))]
+           [plain-name (regexp-replace #rx"::.*$" full-name "")])
+      (datum->syntax id-stx (string->symbol plain-name) id-stx id-stx)))
   (define-syntax-class field
-    (pattern n:identifier)
-    (pattern (n:identifier fp:field-prop)))
+    #:attributes (name init-expr)
+    (pattern n:identifier #:attr name (strip-type #'n) #:attr init-expr #''())
+    (pattern (n:identifier fp:field-prop)
+             #:attr name (strip-type #'n)
+             #:attr init-expr (if (attribute fp.init-expr) #`(list (cons '#,(strip-type #'n) fp.init-expr)) #''())))
+  (define (make-method-name method class-stx)
+    (let* ([full-name (symbol->string (syntax-e class-stx))]
+           [class-name (regexp-replace #rx"::.*$" full-name "")]
+           [method-name (string-append method class-name)])
+      (datum->syntax class-stx
+                     (string->symbol method-name)
+                     class-stx
+                     class-stx)))
+  (define (make-selector-id class-name field-name)
+    (datum->syntax field-name
+                   (string->symbol (string-append (symbol->string (syntax-e class-name)) "-" (symbol->string (syntax-e field-name))))
+                   field-name
+                   field-name))
+  (define (make-mutator-id class-name field-name)
+    (datum->syntax field-name
+                   (string->symbol (string-append "set-" (symbol->string (syntax-e class-name)) "-" (symbol->string (syntax-e field-name)) "!"))
+                   field-name
+                   field-name))
+  (define (with-access-transformer name-stx fields)
+    (define struct-name (strip-type name-stx))
+    (lambda (stx)
+      (syntax-parse stx
+        [(_ pk:expr (field-ids:id ...) body:expr ...)
+         #`(let ([x pk])
+             (let-syntax ([field-ids (make-set!-transformer
+                                      (lambda (stx)
+                                        (syntax-parse stx
+                                          #:literals (set!)
+                                          [id:id #'(hash-ref (bigloo-object-ht x) 'id)]
+                                          [(set! id:id expr:expr) #'(hash-set! (bigloo-object-ht x) 'id expr)])))] ... )
+               body ...)) ])))
   (define-syntax-class class
     #:literals (class)
-    #:attributes (exports)
-    (pattern (class name:id (~optional constructor) f:field ...)
-      #:attr exports #'(name)))
+    #:attributes ((exports 1) (definitions 1))
+    (pattern (class name:id f:field ...)
+             #:attr (exports 1)
+             (list (make-method-name "with-access::" #'name)
+                   (make-method-name "instantiate::" #'name))
+             #:attr (definitions 1)
+             (list #`(define #,(strip-type #'name)
+                       (hash-union! #,(or (extract-type #'name) (make-hash))
+                                    (make-hash (append f.init-expr ...))))
+                   #`(define-syntax #,(make-method-name "with-access::" #'name)
+                       (with-access-transformer #'name (list #'f ...)))
+                   #`(define-syntax #,(make-method-name "instantiate::" #'name)
+                       (lambda (stx)
+                         (syntax-parse stx
+                           [(_ (fname:id fexpr:expr) (... ...))
+                            #`(hash-union! #,(strip-type #'name)
+                                           (make-hash (list (cons 'fname fexpr) (... ...))))]))))))
   (define-syntax-class export-clause
+    #:attributes ((export 1) (code 0))
     #:datum-literals (inline)
     (pattern x:id
-      #:attr export #'x)
+      #:attr code #'(void)
+      #:attr (export 1) (list #'x))
     (pattern (inline x:id arg:id ...)
-      #:attr export #'x)
+      #:attr code #'(void)
+      #:attr (export 1) (list #'x))
     (pattern (x:id arg:id ...)
-      #:attr export #'x)
+      #:attr code #'(void)
+      #:attr (export 1) (list #'x))
     (pattern cls:class
-      #:attr export #'cls.exports))
+      #:attr code #'(b:define-class cls)
+      #:attr (export 1) (syntax->list #'(cls.exports ...))))
   (define-syntax-class module-clause
+    #:datum-literals (export)
     (pattern (export clause:export-clause ...)
-      #:attr code #'(provide clause.export ...))))
+      #:attr code #'(begin clause.code ... (provide clause.export ... ...)))))
+
+;; TODO: remove
+(require racket/pretty)
+(define-for-syntax (trace-stx x)
+  ((dynamic-require 'racket/pretty 'pretty-write) (syntax->datum x)) x)
+
+(define-syntax (b:define-class stx)
+  (syntax-parse stx
+    [(_ cls:class)
+     (trace-stx
+      #`(begin cls.definitions ...))]))
 
 (define-syntax (b:module stx)
   (syntax-parse stx
@@ -155,3 +236,6 @@
         void
         (λ () expr)
         (λ () protect))]))
+
+(define-syntax-rule (multiple-value-bind (id ...) expr body ...)
+  (call-with-values (lambda () expr) (lambda (id ...) body ...)))
