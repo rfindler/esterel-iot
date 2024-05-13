@@ -4,13 +4,26 @@
 (module+ test (require rackunit))
 
 (provide (rename-out [b:assert assert]
+                     [b:datum #%datum]
                      [b:define define]
                      [b:module module]
                      [b:define-inline define-inline]
-                     [b:open-input-string open-input-string]
+                     [open-input-bytes open-input-string]
+                     [call-with-output-bytes call-with-output-string]
                      [b:call-with-input-string call-with-input-string]
                      [b:string=? string=?]
                      [read-string read-chars])
+         correct-arity?
+         with-handler
+         instantiate::pthread
+         thread-start!
+         synchronize
+         make-mutex
+         socket-input
+         socket-output
+         socket-close
+         socket-down?
+         input-port-timeout-set!
          multiple-value-bind
          include/bigloo
          bit-rsh
@@ -40,7 +53,17 @@
                      [list* cons*]
                      ))
 
-(struct bigloo-object (ht))
+(struct bigloo-object (ht struct: maker pred))
+(struct mutex (name sem))
+(struct socket (input output))
+
+(define (make-mutex/proc name)
+  (mutex name (make-semaphore 1)))
+
+(define-syntax (make-mutex stx)
+  (syntax-parse stx
+    [(_) #`(make-mutex/proc #,(format "~a:~a" (syntax-source stx) (syntax-line stx)))]
+    [(_ name) #`(make-mutex/proc name)]))
 
 (define (bit-rsh n m)
   (arithmetic-shift n (- m)))
@@ -103,7 +126,7 @@
      #'(define (fname.id mandatory.id ...)
          body1 body2 ...)]))
 
-(define (extend-object ht k+vs)
+(define (extend-object ht struct: maker pred k+vs)
   (define the-result
     (cond
       [(not ht) (make-hash)]
@@ -112,14 +135,14 @@
   (for ([pr (in-list k+vs)])
     (match-define (cons k v) pr)
     (hash-set! the-result k v))
-  (bigloo-object the-result))
+  (bigloo-object the-result struct: maker pred ))
 
 (begin-for-syntax
-  (define-syntax-class field-prop
-    #:datum-literals (read-only default)
-    #:attributes (init-expr)
-    (pattern read-only #:attr init-expr #f)
-    (pattern (default d:expr) #:attr init-expr #'d))
+  ;(define-syntax-class field-prop
+  ;  #:datum-literals (read-only default)
+  ;  #:attributes (init-expr)
+  ;  (pattern read-only #:attr init-expr #f)
+  ;  (pattern (default d:expr) #:attr init-expr #'d))
   (define (extract-type id-stx)
     (let* ([full-name (symbol->string (syntax-e id-stx))]
            [m (regexp-match #rx"::(.*)$" full-name)])
@@ -130,11 +153,16 @@
            [plain-name (regexp-replace #rx"::.*$" full-name "")])
       (datum->syntax id-stx (string->symbol plain-name) id-stx id-stx)))
   (define-syntax-class field
+    #:datum-literals (read-only default)
     #:attributes (name init-expr)
     (pattern n:identifier #:attr name (strip-type #'n) #:attr init-expr #''())
-    (pattern (n:identifier fp:field-prop)
-             #:attr name (strip-type #'n)
-             #:attr init-expr (if (attribute fp.init-expr) #`(list (cons '#,(strip-type #'n) fp.init-expr)) #''())))
+    (pattern (n:identifier read-only) #:attr name (strip-type #'n) #:attr init-expr #''())
+    (pattern (n:identifier (default d:expr))
+      #:attr name (strip-type #'n) #:attr init-expr #`(list (cons '#,(strip-type #'n) d)))
+    (pattern (n:identifier read-only (default d:expr))
+      #:attr name (strip-type #'n) #:attr init-expr #`(list (cons '#,(strip-type #'n) d)))
+    (pattern (n:identifier (default d:expr) read-only)
+      #:attr name (strip-type #'n) #:attr init-expr #`(list (cons '#,(strip-type #'n) d))))
   (define (make-method-name method class-stx)
     (let* ([full-name (symbol->string (syntax-e class-stx))]
            [class-name (regexp-replace #rx"::.*$" full-name "")]
@@ -176,7 +204,12 @@
              #:attr (definitions 1)
              (list #`(define #,(strip-type #'name)
                        (extend-object #,(or (extract-type #'name) #'#f)
+                                      struct:
+                                      maker
+                                      pred
                                       (append f.init-expr ...)))
+                   #`(define-values (struct: maker pred _ref _set)
+                       (make-struct-type '#,(strip-type #'name) struct:bigloo-object 0 0)) ;TODO
                    #`(define-syntax #,(make-method-name "with-access::" #'name)
                        (with-access-transformer #'name (list #'f ...)))
                    #`(define-syntax #,(make-method-name "instantiate::" #'name)
@@ -184,6 +217,9 @@
                          (syntax-parse stx
                            [(_ (fname:id fexpr:expr) (... ...))
                             #`(extend-object #,(strip-type #'name)
+                                             struct:
+                                             maker
+                                             pred
                                              (list (cons 'fname fexpr)
                                                    (... ...)))]))))))
   (define-syntax-class export-clause
@@ -192,19 +228,23 @@
     (pattern x:id
       #:attr code #'(void)
       #:attr (export 1) (list (strip-type #'x)))
-    (pattern (inline x:id arg:id ...)
+    (pattern (inline x:id _ ...)
       #:attr code #'(void)
       #:attr (export 1) (list (strip-type #'x)))
-    (pattern (x:id arg:id ...)
+    (pattern (x:id y:id ... (~optional (~seq #:key _ ...)))
       #:attr code #'(void)
       #:attr (export 1) (list (strip-type #'x)))
     (pattern cls:class
       #:attr code #'(b:define-class cls)
       #:attr (export 1) (syntax->list #'(cls.exports ...))))
   (define-syntax-class module-clause
-    #:datum-literals (export)
+    #:datum-literals (export import library __mqtt_common)
+    (pattern (import (~and __mqtt_common id))
+      #:attr code (datum->syntax #'id '(require "common.rkt") #'id #'id))
+    (pattern (library _ ...)
+      #:attr code #'(void))
     (pattern (export clause:export-clause ...)
-      #:attr code #'(begin clause.code ... (provide clause.export ... ...)))))
+      #:attr code (trace-stx #'(begin clause.code ... (provide clause.export ... ...))))))
 
 ;; TODO: remove
 (require racket/pretty)
@@ -242,6 +282,9 @@
                                  (cons 'f2 2)
                                  (cons 'f-w-default 11))))
 
+  (check-equal? #t (isa? (instantiate::class-name (f1 1) (f2 2)) class-name))
+  (check-equal? #f (isa? 1 class-name))
+
   (b:define-class
     (class sub-class-name::class-name
       (f3 read-only)
@@ -252,6 +295,8 @@
                                  (cons 'f3 3)
                                  (cons 'f-w-default -1)
                                  (cons 'f-w-default2 -2))))
+
+  (check-equal? #t (isa? (instantiate::sub-class-name (f1 1) (f2 2)) class-name))
 
   (check-equal?
    (with-access::class-name (instantiate::class-name (f2 2) (f1 1) (f-w-default 11))
@@ -288,7 +333,7 @@
 (define-syntax (b:assert stx)
   (syntax-parse stx
     [(_ _ condition)
-     #`(unless condition #,(syntax/loc stx (error "assert failed")))]))
+     #`(unless condition #,(syntax/loc stx (error "assert failed" (quote condition))))]))
 
 (define-syntax (with-trace stx)
   (syntax-parse stx
@@ -346,20 +391,68 @@
   (check-equal? (string-index "abc" "b") 1)
   (check-equal? (string-index "abbc" "bc") 2))
 
-(define (b:open-input-string str)
-  (cond
-    [(string? str) (open-input-string str)]
-    [(bytes? str) (open-input-bytes str)]
-    [else (error 'b:open-input-string "expected (or/c string? bytes?), got ~s" str)]))
-
 (define (b:call-with-input-string str proc)
-  (proc (b:open-input-string str)))
+  (proc (open-input-bytes str)))
 
 (define (b:string=? x y)
   (define (to-bytes n)
     (cond
       [(bytes? n) n]
-      [(string? n) (string->bytes/utf-8 n)]
       [else (error 'b:string=? "bad args ~s ~s" x y)]))
   (bytes=? (to-bytes x)
            (to-bytes y)))
+
+(define-syntax (b:datum stx)
+  (syntax-parse stx
+    [(_ . x)
+     (define u (syntax-e #'x))
+     (cond
+       [(string? u) #`(#%datum . #,(string->bytes/utf-8 u))]
+       [else #`(#%datum . x)])]))
+
+(define (synchronize/proc lock thunk)
+  (dynamic-wind
+   (lambda () (semaphore-wait (mutex-sem lock)))
+   thunk
+   (lambda () (semaphore-post (mutex-sem lock)))))
+
+(define-syntax (synchronize stx)
+  (syntax-parse stx
+    [(_ lock:expr body:expr ...)
+     #'(synchronize/proc lock (lambda () body ...)) ]))
+
+(define (socket-close s)
+  (close-input-port (socket-input s))
+  (close-output-port (socket-output s)))
+
+(define (socket-down? s)
+  (define p (socket-input s))
+  (eof-object? (with-handlers ([exn:fail? (lambda (x) eof)])
+                 (peek-byte p))))
+
+(define (input-port-timeout-set! port)
+  (void))
+
+(struct pthread (name body [thread #:mutable]))
+
+(define-syntax (instantiate::pthread stx)
+  (syntax-parse stx
+    #:datum-literals (name body)
+    [(_ (name x:str) (body thunk:expr))
+     #`(pthread x thunk)]))
+
+(define (thread-start! pthread)
+  (let ([th (thread (pthread-body pthread))])
+    (set-pthread-thread! pthread th)
+    (void)))
+
+(define (with-handler/proc handler thunk)
+  (with-handlers ([exn:fail? handler]) (thunk)))
+
+(define-syntax (with-handler stx)
+  (syntax-parse stx
+    [(_ handler body) #`(with-handler/proc handler (lambda () body))]))
+
+(define (correct-arity? fn n)
+  (equal? n (procedure-arity fn)))
+
