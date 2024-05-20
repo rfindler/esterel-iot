@@ -8,6 +8,7 @@
                      [b:define define]
                      [b:module module]
                      [b:define-inline define-inline]
+                     [thread-start! thread-start-joinable!]
                      [open-input-bytes open-input-string]
                      [call-with-output-bytes call-with-output-string]
                      [b:call-with-input-string call-with-input-string]
@@ -24,6 +25,7 @@
          socket-output
          socket-close
          socket-down?
+         make-client-socket
          input-port-timeout-set!
          multiple-value-bind
          include/bigloo
@@ -31,6 +33,7 @@
          with-trace
          trace-item
          tprint
+         thread-join!
          unwind-protect
          reverse!
          pregexp
@@ -98,7 +101,7 @@
   (define-syntax-class bigloo-kwd-formal-arg
     #:attributes ([racket-arg 1])
     (pattern arg:id
-      #:attr (racket-arg 1) (list #'arg))
+      #:attr (racket-arg 1) (list #'(arg #f)))
     (pattern [arg:id default:expr]
       #:attr (racket-arg 1) (list #`#,(string->keyword (symbol->string (syntax-e #'arg)))
                                   #'[arg default])))
@@ -441,6 +444,10 @@
   (eof-object? (with-handlers ([exn:fail? (lambda (x) eof)])
                  (peek-byte p))))
 
+(define (make-client-socket host port)
+  (define-values (in out) (tcp-connect (bytes->string/utf-8 host) port))
+  (socket in out))
+
 (define (input-port-timeout-set! port)
   (void))
 
@@ -449,13 +456,16 @@
 (define-syntax (instantiate::pthread stx)
   (syntax-parse stx
     #:datum-literals (name body)
-    [(_ (name x:str) (body thunk:expr))
-     #`(pthread x thunk)]))
+    [(_ (~optional (name x:str) #:defaults ([x #'#f])) (body thunk:expr))
+     #`(pthread x thunk #f)]))
 
 (define (thread-start! pthread)
   (let ([th (thread (pthread-body pthread))])
     (set-pthread-thread! pthread th)
-    (void)))
+    pthread))
+
+(define (thread-join! pthread)
+  (thread-wait (pthread-thread pthread)))
 
 (define (with-handler/proc handler thunk)
   (with-handlers ([exn:fail? handler]) (thunk)))
