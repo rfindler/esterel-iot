@@ -256,18 +256,17 @@
     (pattern (library _ ...)
       #:attr code #'(void))
     (pattern (export clause:export-clause ...)
-      #:attr code (trace-stx #'(begin clause.code ... (provide clause.export ... ...))))))
-
-;; TODO: remove
-(require racket/pretty)
-(define-for-syntax (trace-stx x)
-  ((dynamic-require 'racket/pretty 'pretty-write) (syntax->datum x)) x)
+      #:attr code #'(begin clause.code ... (provide clause.export ... ...)))))
 
 (define-syntax (b:define-class stx)
   (syntax-parse stx
-    [(_ cls:class)
-     (trace-stx
-      #`(begin cls.definitions ...))]))
+    [(_ cls:class ...)
+      #`(begin cls.definitions ... ...)]))
+
+(define-syntax (b:define-and-provide-class stx)
+  (syntax-parse stx
+    [(_ cls:class ...)
+      #`(begin cls.definitions ... ... (provide cls.exports ... ...))]))
 
 (module+ test
   (b:define-class
@@ -470,3 +469,15 @@
 
 (define (isa? object class)
   ((bigloo-object-pred class) object))
+
+(b:define-and-provide-class
+ (class &exception
+   (fname read-only (default #f))
+   (location read-only (default #f)))
+
+ (class &error::&exception
+   (proc read-only)
+   (msg read-only)
+   (obj read-only))
+
+ (class &io-error::&error) )
