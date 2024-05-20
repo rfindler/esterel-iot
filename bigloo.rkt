@@ -13,6 +13,7 @@
                      [b:call-with-input-string call-with-input-string]
                      [b:string=? string=?]
                      [read-string read-chars])
+         isa?
          correct-arity?
          with-handler
          instantiate::pthread
@@ -126,7 +127,23 @@
      #'(define (fname.id mandatory.id ...)
          body1 body2 ...)]))
 
-(define (extend-object ht struct: maker pred k+vs)
+(define (extend-object ht k+vs class-name)
+  (define-values (struct: maker pred _ref _set)
+    (if ht
+      (if class-name
+        (make-struct-type class-name (bigloo-object-struct: ht) 0 0)
+        (values (bigloo-object-struct: ht)
+                (bigloo-object-maker ht)
+                (bigloo-object-pred ht)
+                #f
+                #f))
+      (if class-name
+        (make-struct-type class-name struct:bigloo-object 0 0)
+        (values struct:bigloo-object
+                bigloo-object
+                bigloo-object?
+                #f
+                #f))))
   (define the-result
     (cond
       [(not ht) (make-hash)]
@@ -135,7 +152,7 @@
   (for ([pr (in-list k+vs)])
     (match-define (cons k v) pr)
     (hash-set! the-result k v))
-  (bigloo-object the-result struct: maker pred ))
+  (maker the-result struct: maker pred))
 
 (begin-for-syntax
   ;(define-syntax-class field-prop
@@ -200,16 +217,13 @@
     (pattern (class name:id f:field ...)
              #:attr (exports 1)
              (list (make-method-name "with-access::" #'name)
-                   (make-method-name "instantiate::" #'name))
+                   (make-method-name "instantiate::" #'name)
+                   (strip-type #'name))
              #:attr (definitions 1)
              (list #`(define #,(strip-type #'name)
                        (extend-object #,(or (extract-type #'name) #'#f)
-                                      struct:
-                                      maker
-                                      pred
-                                      (append f.init-expr ...)))
-                   #`(define-values (struct: maker pred _ref _set)
-                       (make-struct-type '#,(strip-type #'name) struct:bigloo-object 0 0)) ;TODO
+                                      (append f.init-expr ...)
+                                      '#,(strip-type #'name)))
                    #`(define-syntax #,(make-method-name "with-access::" #'name)
                        (with-access-transformer #'name (list #'f ...)))
                    #`(define-syntax #,(make-method-name "instantiate::" #'name)
@@ -217,11 +231,9 @@
                          (syntax-parse stx
                            [(_ (fname:id fexpr:expr) (... ...))
                             #`(extend-object #,(strip-type #'name)
-                                             struct:
-                                             maker
-                                             pred
                                              (list (cons 'fname fexpr)
-                                                   (... ...)))]))))))
+                                                   (... ...))
+                                             #f)]))))))
   (define-syntax-class export-clause
     #:attributes ((export 1) (code 0))
     #:datum-literals (inline)
@@ -456,3 +468,5 @@
 (define (correct-arity? fn n)
   (equal? n (procedure-arity fn)))
 
+(define (isa? object class)
+  ((bigloo-object-pred class) object))
